@@ -34,7 +34,7 @@ unsigned int delayCharge_us;                // time for charging cap [us]
 const float Rch = 98e3;                     // charge resistance [Ohm]
 const float Cnom = 380e-12;                 // nominal capacitance at typical conditions [F]
 float RCch_nom = Rch*Cnom;                  // nominal charge time constant [s] (corresponds to time for charge/discharge to 63% of final value)
-unsigned long t_start_us, dt_us;            // start time and discharge time [u]s
+uint32_t t_start_ti, dt_ti;                  // start time and discharge time [ticks]
 float dt;                                   // discharge time [s]
 const float V_discharge = 1.5;              // voltage to discharge to [V] 
 int THRESH_DISCHARGE = V_discharge*4096/3.3;// threshold for discharge in ADC levels
@@ -87,37 +87,37 @@ void loop() {
     // discharge cap
     digitalWrite(LED,HIGH);                     // generate trigger signal
     noInterrupts();                             // turn off interrupts
-    t_start_us = micros();                      // mark start of time measurement
+    t_start_ti = System.ticks();                // mark start of time measurement
     digitalWrite(CHARGE, LOW);                  // start discharging
     while (analogRead(MEAS) > THRESH_DISCHARGE); // wait until voltage below threshold
     digitalWrite(LED,LOW);                      // trigger low
-    dt_us = micros() - t_start_us;              // mark end of time measurement and calculate discharge duration
+    dt_ti = System.ticks() - t_start_ti;        // mark end of time measurement and calculate discharge duration
     pinMode(CHARGE,INPUT);                      // set to hi Z, no charge nor discharge
     //Serial.printlnf("ADC level after discharge: %d",analogRead(MEAS));
-    //Serial.printlnf("time out criteria was: stop: %u <-> threshold: %u",dt_us,t_start_us + 1e3);
     read_d = analogRead(MEAS);                  // measure voltage where discharge stops
     interrupts();                               // turn on interrupts
     
+	//Serial.printf("%u,",dt_ti);
     
     //Serial.printlnf("Charged voltage ADC level: %d", read_s);
-    V_s = (float) read_s/4096*3.3;              // calculate start voltage            
+    V_s = (float) read_s/4096*3.3;              					// calculate start voltage            
     //Serial.printlnf("Charged voltage: %f V", V_s);
     //Serial.printlnf("THRESH_DISCHARGE: %d",THRESH_DISCHARGE);
-    V_d = (float) read_d/4096*3.3;              // calculate stop voltage
+    V_d = (float) read_d/4096*3.3;              					// calculate stop voltage
     //Serial.printlnf("Discharged actual voltage: %f V",V_d);
-    dt = (float) dt_us/1e6;                     // convert to s
-    //Serial.printlnf("Time taken for discharge: %u us",dt_us);
-    C_est = (double)dt/Rch/log((double)V_s/V_d);// calculate capacitance estimate 
+    dt = (float) dt_ti/System.ticksPerMicrosecond()/1e6;            // convert to s when using ticks
+    //Serial.printf("%1.12e,",dt);
+    C_est = (double)dt/Rch/log((double)V_s/V_d);					// calculate capacitance estimate 
     //Serial.printlnf("Capacitance, estimated: %f pF",C_est*1e12);
     //Serial.printlnf("%f",C_est*1e12);
-    C_mean += C_est;                            // add up estimate for this iteration
-    if (n >= N) {                               // N iterations done
-        C_mean = C_mean/N;                      // divide to get the average
+    C_mean += C_est;                            					// add up estimate for this iteration
+    if (n >= N) {                               					// N iterations done
+        C_mean = C_mean/N;                      					// divide to get the average
         Serial.printlnf("MEAN: %f",C_mean*1e12);
-        hum = (C_mean*1e12-C_ref_pF)/S+RH_ref;     // calculate humidity
+        hum = (C_mean*1e12-C_ref_pF)/S+RH_ref;     					// calculate humidity
         Serial.printlnf("humidity: %d",hum);
-        C_mean = 0;                             // reinit for next estimate
-        n = 1;                                  // reinit for next estimate
+        C_mean = 0;                            		 				// reinit for next estimate
+        n = 1;                                  					// reinit for next estimate
     } else
         n++;
     
