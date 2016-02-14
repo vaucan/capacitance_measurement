@@ -84,6 +84,7 @@ void setup() {
     
     Serial.println("init finished");
     Serial.printlnf("System version: %s", System.version().c_str());
+	Serial.print("This is compiled and flashed with Particle CLI and uses symlink to library.\n");
 }
 
 void loop() {
