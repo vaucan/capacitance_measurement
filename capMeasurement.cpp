@@ -24,9 +24,12 @@ SOFTWARE.
 
 
 #include "ThingSpeak.h"
+#include "1wire.h"
+#include "DS18b20.h"
 #include "math.h"
 
 #define PUB_DELAY 2e3
+const unsigned long LOOPDELAY = 5*60*1000;
 
 // pin config
 int LED = D7;                               // LED on D7 on Core/Photon
@@ -64,7 +67,11 @@ TCPClient client;
 float frac = -1.2;
 int fails = 0, tot = 0, valSet, valsSent;
 
-const unsigned long LOOPDELAY = 5*60*1000;
+// temperature, 1wire vars
+unsigned char MS = 0, LS = 0, IOBytes[9], ID[8], CRC_res = 0xFF;
+float T = -50.0, fracCrcError = 0;
+int nbrCrcError = 0, nbrSensNoDetect = 0;
+bool sensNoDetect = true;
 
 void setup() {
      // Scale the RGB LED brightness to 50% of max (256)
@@ -75,9 +82,11 @@ void setup() {
     pinMode(LED, OUTPUT);   // init led
     digitalWrite(LED,LOW);  // off
     
-    pinMode(MEAS, INPUT);   // measuring pin to input
+    pinMode(MEAS, INPUT);   // cap measuring pin to input
     pinMode(CHARGE,INPUT);  // no charge/discharge 
     
+    pinMode(D6, OUTPUT); // temp sensor to D6, to outpu
+
     ThingSpeak.begin(client,"api.thingspeak.com", 80);
     
     Serial.begin(9600);
@@ -89,62 +98,115 @@ void setup() {
 
 void loop() {
     
+// =============== temp measurement =========================
+    // OW temp conversion when only one DS1820 on bus
+    // DISABLE INTERRUPTS WHEN READING ONE-WIRE DEVICES!!
+
+    if (OW_reset_pulse()) {
+        //Serial.println("sensor not detected");
+        nbrSensNoDetect++;
+        sensNoDetect = true;
+    } else
+        sensNoDetect = false;
+
+    OW_write_byte(SKIP_ROM);
+    OW_write_byte(CONV_TEMP);
+    while(!OW_read_bit()); // until temp conversion ready
+
+    OW_reset_pulse();
+    OW_write_byte(SKIP_ROM);
+    OW_write_byte(READ_SCP);
+
+    for (k=0;k<9;k++)
+        IOBytes[k] = OW_read_byte();
+
+    CRC_res = CRC_Calc(IOBytes);	//Calculate CRC or data received from DS18b20
+    /*sprintf(buf,"CRC result: 0x%.2X",CRC_res);
+    Serial.println(buf);
+    */
+
+    if (CRC_res == 0) {
+        LS = IOBytes[0];	//Extract least temperature bytes
+        MS = IOBytes[1];
+        T = ConvTwosComp(LS,MS); //Convert from DS18b20's BCD to float
+        //round_ten(T,temp);		//Round float to one decimal
+        if (sensNoDetect)
+            T = 87;
+    } else {
+        T = 88;
+        nbrCrcError++;
+        fracCrcError = (float) nbrCrcError/reading;
+    }
+
+    Serial.printlnf("MS: 0x%.2X, LS: 0x%.2X",MS,LS);
+    Serial.printlnf("CRC result: 0x%.2X",CRC_res);
+    Serial.print("temperature: ");
+    Serial.println(T);
+    Serial.printlnf("number of sensor not detected: %d",nbrSensNoDetect);
+    Serial.printlnf("number of CRC errors: %d",nbrCrcError);
+    Serial.printlnf("fraction CRC errors: %1.2f",fracCrcError);
     
+// =============== humidity measurement ========================
+
     //Serial.printlnf("Nominal charge time constant: %f s",RCch_nom);
     delayCharge = (float) M*RCch_nom;           // calc time for charging
     //Serial.printlnf("Charge time: %f s",delayCharge);
     delayCharge_us = delayCharge*1e6;           // to us
     //Serial.printlnf("time for charging: %u us", delayCharge_us);
     
-    // discharge cap properly
-    pinMode(CHARGE, OUTPUT);
-    digitalWrite(CHARGE, LOW);
-    delayMicroseconds(delayCharge_us);
-  
-    //Serial.printlnf("V_meas: %d",analogRead(MEAS));
-   
-    // charge cap
-    digitalWrite(CHARGE,HIGH);                         
-    delayMicroseconds(delayCharge_us);          // wait sufficient time
-    read_s = analogRead(MEAS);                  // measure voltage where discharge starts
-  
-    // discharge cap
-    digitalWrite(LED,HIGH);                     // generate trigger signal
-    noInterrupts();                             // turn off interrupts
-    t_start_ti = System.ticks();                // mark start of time measurement in CPU ticks
-    digitalWrite(CHARGE, LOW);                  // start discharging
-    while (analogRead(MEAS) > THRESH_DISCHARGE); // wait until voltage below threshold
-    digitalWrite(LED,LOW);                      // trigger low
-    dt_ti = System.ticks() - t_start_ti;        // mark end of time measurement and calculate discharge duration in ticks
-    pinMode(CHARGE,INPUT);                      // set to hi Z, no charge nor discharge
-    //Serial.printlnf("ADC level after discharge: %d",analogRead(MEAS));
-    read_d = analogRead(MEAS);                  // measure voltage where discharge stops
-    interrupts();                               // turn on interrupts
+    while (n <= N) {
+    	// discharge cap properly
+    	pinMode(CHARGE, OUTPUT);
+    	digitalWrite(CHARGE, LOW);
+    	delayMicroseconds(delayCharge_us);
+
+    	//Serial.printlnf("V_meas: %d",analogRead(MEAS));
+
+    	// charge cap
+    	digitalWrite(CHARGE,HIGH);
+    	delayMicroseconds(delayCharge_us);          // wait sufficient time
+    	read_s = analogRead(MEAS);                  // measure voltage where discharge starts
+
+    	// discharge cap
+    	digitalWrite(LED,HIGH);                     // generate trigger signal
+    	noInterrupts();                             // turn off interrupts
+    	t_start_ti = System.ticks();                // mark start of time measurement in CPU ticks
+    	digitalWrite(CHARGE, LOW);                  // start discharging
+    	while (analogRead(MEAS) > THRESH_DISCHARGE); // wait until voltage below threshold
+    	digitalWrite(LED,LOW);                      // trigger low
+    	dt_ti = System.ticks() - t_start_ti;        // mark end of time measurement and calculate discharge duration in ticks
+    	pinMode(CHARGE,INPUT);                      // set to hi Z, no charge nor discharge
+    	//Serial.printlnf("ADC level after discharge: %d",analogRead(MEAS));
+    	read_d = analogRead(MEAS);                  // measure voltage where discharge stops
+    	interrupts();                               // turn on interrupts
+
+    	//Serial.printf("%u,",dt_ti);
+
+    	//Serial.printlnf("Charged voltage ADC level: %d", read_s);
+    	V_s = (float) read_s/4096*3.3;                                  // calculate start voltage
+    	//Serial.printlnf("Charged voltage: %f V", V_s);
+    	//Serial.printlnf("THRESH_DISCHARGE: %d",THRESH_DISCHARGE);
+    	V_d = (float) read_d/4096*3.3;                                  // calculate stop voltage
+    	//Serial.printlnf("Discharged actual voltage: %f V",V_d);
+    	dt = (float) dt_ti/System.ticksPerMicrosecond()/1e6;            // convert to s when using ticks
+    	//Serial.printf("%1.12e,",dt);
+    	C_est = (double)dt/Rch/log((double)V_s/V_d);                    // calculate capacitance estimate
+    	//Serial.printlnf("Capacitance, estimated: %f pF",C_est*1e12);
+    	//Serial.printf("%f\n",C_est*1e12);
+    	C_tmp += C_est;                                                 // add up estimate for this iteration
+    	n++;
+    }
     
-    //Serial.printf("%u,",dt_ti);
-    
-    //Serial.printlnf("Charged voltage ADC level: %d", read_s);
-    V_s = (float) read_s/4096*3.3;                                  // calculate start voltage            
-    //Serial.printlnf("Charged voltage: %f V", V_s);
-    //Serial.printlnf("THRESH_DISCHARGE: %d",THRESH_DISCHARGE);
-    V_d = (float) read_d/4096*3.3;                                  // calculate stop voltage
-    //Serial.printlnf("Discharged actual voltage: %f V",V_d);
-    dt = (float) dt_ti/System.ticksPerMicrosecond()/1e6;            // convert to s when using ticks
-    //Serial.printf("%1.12e,",dt);
-    C_est = (double)dt/Rch/log((double)V_s/V_d);                    // calculate capacitance estimate 
-    //Serial.printlnf("Capacitance, estimated: %f pF",C_est*1e12);
-    //Serial.printf("%f\n",C_est*1e12);
-    C_tmp += C_est;                                                 // add up estimate for this iteration
-    if (n >= N) {                                                   // N iterations done
-        C_tmp = C_tmp/N;                                            // divide to get the average
-        C_mean = C_tmp;
-        Serial.printlnf("MEAN: %f",C_mean*1e12);
-        hum = (float) (C_mean*1e12-C_ref_pF)/S+RH_ref;              // calculate humidity
-        Serial.printlnf("humidity: %1.0f",hum);
-        C_tmp = 0;                                                  // reinit for next estimate
-        n = 1;                                                      // reinit for next estimate
-    } else
-        n++;
+    // N iterations done
+	C_tmp = C_tmp/N;                                            // divide to get the average
+	C_mean = C_tmp;
+	Serial.printlnf("MEAN: %f",C_mean*1e12);
+	hum = (float) (C_mean*1e12-C_ref_pF)/S+RH_ref;              // calculate humidity
+	Serial.printlnf("humidity: %1.0f",hum);
+	C_tmp = 0;                                                  // reinit for next estimate
+	n = 1;                                                      // reinit for next estimate
+
+
     
    // Then you write the fields that you've set all at once.
     /* Generally, these are HTTP status codes.  Negative values indicate an error generated by the library.
@@ -164,32 +226,40 @@ void loop() {
 
     // turn HTTP status code of 200 if successful.  See getLastReadStatus() for other possible return values.
     // int writeField(unsigned long channelNumber, unsigned int field, float value, const char * writeAPIKey)
-    if (n==1) {
-        waitUntil(WiFi.ready); // wait until WiFi is ready
-        Serial.println("wifi ready");
-        
-        //waitUntil(Particle.connected);
-        //Serial.println("cloud ready");
-        
-        C_tmp = C_mean*1e12;
-        valsSent = ThingSpeak.writeField(myChannelNumber, 1, C_tmp, myWriteAPIKey);	//thingspeak connection
-        C_tmp = 0;
-        Serial.printlnf("Attempt POST to ThingSpeak. Return code: %d",valsSent);
-        
-        if (valsSent == OK_SUCCESS) {
-            Serial.println("Value successfully sent to thingspeak");
-        } else {
-            Serial.println("Sending to thingspeak FAILED");
-            //valsSent = ThingSpeak.getLastReadStatus();
-            Serial.printlnf("Error code: %d",valsSent);
-            
-            fails++;
-        }
-        tot++;
-        frac = (float) fails/tot;
-        Particle.publish("fraction-fails", String(frac), 60, PRIVATE);
-        delay(LOOPDELAY);
-    }
-    //delay(1e3);
-    
+
+	waitUntil(WiFi.ready); // wait until WiFi is ready
+	Serial.println("wifi ready");
+
+	C_tmp = C_mean*1e12; // TODO: use different new tmp var
+	valSet = ThingSpeak.setField(1, (float) C_tmp);
+	C_tmp = 0;
+	if(valSet == OK_SUCCESS) {
+		Serial.println("Value set to field 1");
+	} else {
+		Serial.println("Value 1 not set successfully");
+		Serial.printlnf("Error code: %d",valSet);
+	}
+
+	valSet = ThingSpeak.setField(2, (float)  T);
+	if(valSet == OK_SUCCESS) {
+		Serial.println("Value set to field 2");
+	} else {
+		Serial.println("Value 2 not set successfully");
+		Serial.printlnf("Error code: %d",valSet);
+	}
+
+	valsSent = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+
+	if(valsSent == OK_SUCCESS) {
+		Serial.println("Value successfully sent to thingspeak");
+	} else {
+		Serial.println("Sending to thingspeak FAILED");
+		Serial.printlnf("Error code: %d",valsSent);
+		fails++;
+	}
+	tot++;
+	frac = (float) fails/tot;
+	Particle.publish("fraction-fails", String(frac), 60, PRIVATE);
+	delay(LOOPDELAY);
+
 }
