@@ -173,7 +173,7 @@ void loop() {
         C_tmp = C_mean*1e12;
         valSet = ThingSpeak.setField(1, C_tmp);	// set capacitance
         C_tmp = 0;
-        valSet = ThingSpeak.setField(2, C_tmp);	// set humidity
+        valSet = ThingSpeak.setField(2, hum);	// set humidity
 
         valsSent = ThingSpeak.writeFields(myChannelNumber,myWriteAPIKey);
         Serial.printlnf("Attempt POST to ThingSpeak. Return code: %d",valsSent);
