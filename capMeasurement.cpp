@@ -171,8 +171,11 @@ void loop() {
         //Serial.println("cloud ready");
         
         C_tmp = C_mean*1e12;
-        valsSent = ThingSpeak.writeField(myChannelNumber, 1, C_tmp, myWriteAPIKey);	//thingspeak connection
+        valSet = ThingSpeak.setField(1, C_tmp);	// set capacitance
         C_tmp = 0;
+        valSet = ThingSpeak.setField(2, C_tmp);	// set humidity
+
+        valsSent = ThingSpeak.writeFields(myChannelNumber,myWriteAPIKey);
         Serial.printlnf("Attempt POST to ThingSpeak. Return code: %d",valsSent);
         
         if (valsSent == OK_SUCCESS) {
